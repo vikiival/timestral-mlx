@@ -102,12 +102,16 @@ The released `model.safetensors` files load unchanged; the only key rename (`_ga
 - every clampsym combination
 - the released Timestral-5M checkpoint
 
-Measured on the released checkpoints (max abs diff / max |forecast|):
+How far the MLX forecasts are from the PyTorch forecasts on the released checkpoints. Each number is the largest disagreement divided by the largest forecast value. `1e-6` means the two differ by at most one part in a million.
 
-| checkpoint | 2000 → 96 | 1500 → 500 (16 blocks) | V=3 + known covariate |
-|---|---|---|---|
-| Timestral-5M | 5.4e-6 | 1.1e-6 | 3.4e-6 |
-| Timestral-209M | 9.4e-7 | 1.1e-6 | 6.4e-7 |
+| checkpoint | 2000 steps → 96 (1 block) | 1500 → 500 (1 block) | 2000 → 2500 (3 blocks) | 3 variates + known covariate, 800 → 64 |
+|---|---|---|---|---|
+| Timestral-5M | 5.4e-6 | 1.1e-6 | 9.7e-5 | 3.4e-6 |
+| Timestral-209M | 9.4e-7 | 1.1e-6 | 4.6e-6 | 6.4e-7 |
+
+The model forecasts up to 1,024 steps (32 patches of 32) per block. Longer horizons are decoded block by block, and each block's median feeds back as context. Tiny float32 differences can compound across blocks, which is why the 3-block column is larger. This is the model's own sensitivity, not a porting error. Nudging the input by one float32 rounding step moves PyTorch's own forecast by the same amount (7.4e-5 for Timestral-5M), and the per-block pattern matches MLX's.
+
+For scale, a real porting bug (the wrong RoPE pairing) gives about 0.5.
 
 ```bash
 uv run pytest                          # all tests; the 5M parity test downloads from the Hub
