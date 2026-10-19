@@ -98,6 +98,12 @@ class _Rows:
     known_future_mask: np.ndarray | None
     n_tgt: int
 
+    def slice(self, sl: slice) -> "_Rows":
+        """The same rows for a subset of series."""
+        kf = self.known_future[sl] if self.known_future is not None else None
+        kfm = self.known_future_mask[sl] if self.known_future_mask is not None else None
+        return _Rows(self.rows[sl], self.mask[sl], self.roles, kf, kfm, self.n_tgt)
+
 
 class TimestralForecaster:
     """Block-autoregressive quantile forecaster around a :class:`TimestralModel`.
@@ -253,17 +259,12 @@ class TimestralForecaster:
             assert all(abs(lo + hi - 1.0) < 1e-9 for lo, hi in zip(levels, reversed(levels))), (
                 f"symmetric averaging needs quantile levels symmetric about 0.5, got {levels}"
             )
-            # Both passes run as one batch of 2B series, so the per-call overhead is paid once.
-            both = self._forecast_raw(
-                np.concatenate([inputs, -inputs]),
-                np.concatenate([mask, mask]),
-                prediction_length,
-                **{name: _stack(rows, mirrored_covariates[name]) for name, rows in covariates.items()},
+            quantiles, mirrored = self._forecast_raw(
+                inputs, mask, prediction_length, **covariates, mirrored_covariates=mirrored_covariates
             )
-            quantiles, mirrored = both[:b], both[b:]
             quantiles = 0.5 * (quantiles + (-mirrored)[..., ::-1])
         else:
-            quantiles = self._forecast_raw(inputs, mask, prediction_length, **covariates)
+            quantiles, _ = self._forecast_raw(inputs, mask, prediction_length, **covariates)
         if clip_nonnegative:
             eligible = mx.array(nonnegative_context(inputs, mask))
             quantiles = mx.where(eligible[..., None, None], mx.maximum(quantiles, 0.0), quantiles)
@@ -341,27 +342,61 @@ class TimestralForecaster:
         prediction_length: int,
         past_covariates: np.ndarray | None = None,
         known_covariates: np.ndarray | None = None,
-    ) -> mx.array:
-        """One forecast pass: `(B, V, T)` inputs to `(B, V, H, Q)` raw-space quantiles."""
+        mirrored_covariates: dict[str, np.ndarray | None] | None = None,
+    ) -> tuple[mx.array, mx.array | None]:
+        """`(B, V, T)` inputs to `(B, V, H, Q)` raw-space quantiles, plus the mirrored pass if requested.
+
+        With `mirrored_covariates`, the mirrored pass forecasts `-inputs` with those
+        covariates. Each chunk of series is decoded together with its own mirror, as one
+        batch `[chunk ; -chunk]`, so the per-call overhead is paid once. Chunk shapes depend
+        only on input shapes, never on the sign of the input, which keeps symmetric
+        averaging exactly odd however the batch is chunked.
+        """
         packed = self._assemble_rows(inputs, observation_mask, prediction_length, past_covariates, known_covariates)
+        mirror = None
+        if mirrored_covariates is not None:
+            mirror = self._assemble_rows(-inputs, observation_mask, prediction_length, **mirrored_covariates)
         b, v_all, _ = packed.rows.shape
         series_per_chunk = self._series_per_chunk(v_all, packed.rows.shape[-1], prediction_length, packed.roles is not None)
-        chunks = []
+        # Pair a chunk with its mirror only if two series fit in one call; otherwise decode
+        # them in separate calls so the memory budget still holds.
+        paired = mirror is not None and series_per_chunk >= 2
+        if paired:
+            series_per_chunk //= 2
+        chunks, mirrored_chunks = [], []
         for start in range(0, b, series_per_chunk):
             sl = slice(start, start + series_per_chunk)
-            rows, mask = mx.array(packed.rows[sl]), mx.array(packed.mask[sl])
-            kf = mx.array(packed.known_future[sl]) if packed.known_future is not None else None
-            kfm = mx.array(packed.known_future_mask[sl]) if packed.known_future_mask is not None else None
-            quantiles = self._block_ar_decode(rows, mask, prediction_length, packed.roles, kf, kfm)
-            quantiles = quantiles[:, : packed.n_tgt]
-            if self.quantile_real_cap_k > 0:
-                quantiles = self._cap_quantiles(quantiles, rows[:, : packed.n_tgt], mask[:, : packed.n_tgt])
-            mx.eval(quantiles)
-            chunks.append(quantiles)
-        quantiles = mx.concatenate(chunks, axis=0) if len(chunks) > 1 else chunks[0]
-        n_nan = int(mx.isnan(quantiles).sum().item())
-        if n_nan:
-            raise ValueError(f"forecast produced {n_nan} NaN values; the input is degenerate")
+            if paired:
+                both = self._decode_chunk([packed.slice(sl), mirror.slice(sl)], prediction_length)
+                n = both.shape[0] // 2
+                chunks.append(both[:n])
+                mirrored_chunks.append(both[n:])
+            else:
+                chunks.append(self._decode_chunk([packed.slice(sl)], prediction_length))
+                if mirror is not None:
+                    mirrored_chunks.append(self._decode_chunk([mirror.slice(sl)], prediction_length))
+        quantiles = mx.concatenate(chunks, axis=0)
+        mirrored = mx.concatenate(mirrored_chunks, axis=0) if mirror is not None else None
+        for result in (quantiles, mirrored):  # the reference raises on the first pass first
+            n_nan = int(mx.isnan(result).sum().item()) if result is not None else 0
+            if n_nan:
+                raise ValueError(f"forecast produced {n_nan} NaN values; the input is degenerate")
+        return quantiles, mirrored
+
+    def _decode_chunk(self, parts: list["_Rows"], prediction_length: int) -> mx.array:
+        """Decode packed series stacked along the series axis as one batch; returns `(B, V, H, Q)`."""
+        rows = mx.array(np.concatenate([p.rows for p in parts]))
+        mask = mx.array(np.concatenate([p.mask for p in parts]))
+        first = parts[0]
+        kf = kfm = None
+        if first.known_future is not None:
+            kf = mx.array(np.concatenate([p.known_future for p in parts]))
+            kfm = mx.array(np.concatenate([p.known_future_mask for p in parts]))
+        quantiles = self._block_ar_decode(rows, mask, prediction_length, first.roles, kf, kfm)
+        quantiles = quantiles[:, : first.n_tgt]
+        if self.quantile_real_cap_k > 0:
+            quantiles = self._cap_quantiles(quantiles, rows[:, : first.n_tgt], mask[:, : first.n_tgt])
+        mx.eval(quantiles)
         return quantiles
 
     def _series_per_chunk(self, rows_per_series: int, ctx_len: int, prediction_length: int, windowed: bool) -> int:
@@ -557,7 +592,3 @@ def _cat_rows(a: np.ndarray | None, b: np.ndarray | None) -> np.ndarray | None:
         return a if b is None else b
     return np.concatenate([a.astype(np.float32), b.astype(np.float32)], axis=1)
 
-
-def _stack(a: np.ndarray | None, b: np.ndarray | None) -> np.ndarray | None:
-    """Concatenate two batches of covariate rows along the series axis; both or neither are None."""
-    return None if a is None else np.concatenate([a, b])

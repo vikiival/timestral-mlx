@@ -166,3 +166,20 @@ def test_token_budget_bounds_chunks() -> None:
     assert TimestralForecaster(fc.model, max_batch_tokens=72 * 10)._series_per_chunk(2, 256, 24, windowed=True) == 5
     x = series(5, 2, 100)
     np.testing.assert_allclose(budgeted.forecast(x, 20).quantiles, fc.forecast(x, 20).quantiles, rtol=1e-5, atol=1e-5)
+
+
+@pytest.mark.parametrize(("rows", "tokens"), [(5, 65536), (64, 100), (1, 65536), (64, 1)])
+def test_symmetric_averaging_is_odd_under_uneven_chunks(rows: int, tokens: int) -> None:
+    """Chunking depends only on shapes, so negating the input still reflects the forecast exactly."""
+    fc = TimestralForecaster(tiny_forecaster().model, max_batch_rows=rows, max_batch_tokens=tokens)
+    x = series(3, 1, 120, seed=3)
+    pos = fc.forecast(x, 40, clip_nonnegative=False).quantiles
+    neg = fc.forecast(-x, 40, clip_nonnegative=False).quantiles
+    np.testing.assert_array_equal(neg, -pos[..., ::-1])
+
+
+def test_nan_error_counts_first_pass_only() -> None:
+    fc = tiny_forecaster()
+    fc.model.head.projection.output_layer.weight = mx.full(fc.model.head.projection.output_layer.weight.shape, mx.nan)
+    with pytest.raises(ValueError, match=r"produced 72 NaN values"):  # 1 series x 8 steps x 9 quantiles, one pass
+        fc.forecast(series(1, 1, 64), 8)
