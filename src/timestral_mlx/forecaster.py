@@ -248,14 +248,22 @@ class TimestralForecaster:
         if covariates["known_covariates"] is not None and not self.supports_known_covariates:
             raise ValueError("this checkpoint cannot condition on known-future covariates")
 
-        quantiles = self._forecast_raw(inputs, mask, prediction_length, **covariates)
         if symmetric_averaging:
             levels = self.quantile_levels
             assert all(abs(lo + hi - 1.0) < 1e-9 for lo, hi in zip(levels, reversed(levels))), (
                 f"symmetric averaging needs quantile levels symmetric about 0.5, got {levels}"
             )
-            mirrored = self._forecast_raw(-inputs, mask, prediction_length, **mirrored_covariates)
+            # Both passes run as one batch of 2B series, so the per-call overhead is paid once.
+            both = self._forecast_raw(
+                np.concatenate([inputs, -inputs]),
+                np.concatenate([mask, mask]),
+                prediction_length,
+                **{name: _stack(rows, mirrored_covariates[name]) for name, rows in covariates.items()},
+            )
+            quantiles, mirrored = both[:b], both[b:]
             quantiles = 0.5 * (quantiles + (-mirrored)[..., ::-1])
+        else:
+            quantiles = self._forecast_raw(inputs, mask, prediction_length, **covariates)
         if clip_nonnegative:
             eligible = mx.array(nonnegative_context(inputs, mask))
             quantiles = mx.where(eligible[..., None, None], mx.maximum(quantiles, 0.0), quantiles)
@@ -548,3 +556,8 @@ def _cat_rows(a: np.ndarray | None, b: np.ndarray | None) -> np.ndarray | None:
     if a is None or b is None:
         return a if b is None else b
     return np.concatenate([a.astype(np.float32), b.astype(np.float32)], axis=1)
+
+
+def _stack(a: np.ndarray | None, b: np.ndarray | None) -> np.ndarray | None:
+    """Concatenate two batches of covariate rows along the series axis; both or neither are None."""
+    return None if a is None else np.concatenate([a, b])

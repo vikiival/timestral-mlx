@@ -168,20 +168,20 @@ TIMESTRAL_SKIP_HUB=1 uv run pytest     # offline
 uv run python benchmarks/bench.py --models 5M 209M
 ```
 
-On an M3 Pro (36 GB), MLX on the GPU vs the PyTorch reference on the CPU, median of 2 runs:
+On an M3 Pro (36 GB), MLX on the GPU vs the PyTorch reference on the CPU, median of 5 runs:
 
 | model | series × variates × context → horizon | MLX | PyTorch CPU | speedup | MLX peak |
 |---|---|---|---|---|---|
-| 5M | 1 × 1 × 2048 → 96 | 14 ms | 10 ms | 0.7× | 0.04 GB |
-| 5M | 32 × 1 × 2048 → 96 | 32 ms | 104 ms | 3.3× | 0.41 GB |
-| 5M | 1 × 1 × 32768 → 512 | 25 ms | 77 ms | 3.1× | 0.21 GB |
-| 209M | 1 × 1 × 2048 → 96 | 44 ms | 148 ms | 3.4× | 0.95 GB |
-| 209M | 32 × 1 × 2048 → 96 | 0.64 s | 1.95 s | 3.0× | 2.69 GB |
-| 209M | 256 × 1 × 512 → 64 | 1.40 s | 4.06 s | 2.9× | 2.36 GB |
-| 209M | 8 × 4 × 4096 → 128 | 1.33 s | 4.16 s | 3.1× | 2.84 GB |
-| 209M | 1 × 1 × 32768 → 512 | 0.38 s | 1.32 s | 3.5× | 2.33 GB |
+| 5M | 1 × 1 × 2048 → 96 | 4 ms | 10 ms | 2.3× | 0.05 GB |
+| 5M | 32 × 1 × 2048 → 96 | 29 ms | 89 ms | 3.1× | 0.80 GB |
+| 5M | 1 × 1 × 32768 → 512 | 20 ms | 67 ms | 3.3× | 0.41 GB |
+| 209M | 1 × 1 × 2048 → 96 | 29 ms | 138 ms | 4.7× | 1.05 GB |
+| 209M | 32 × 1 × 2048 → 96 | 0.61 s | 1.70 s | 2.8× | 2.74 GB |
+| 209M | 256 × 1 × 512 → 64 | 1.34 s | 3.65 s | 2.7× | 2.36 GB |
+| 209M | 8 × 4 × 4096 → 128 | 1.29 s | 3.59 s | 2.8× | 2.80 GB |
+| 209M | 1 × 1 × 32768 → 512 | 0.36 s | 1.25 s | 3.5× | 2.63 GB |
 
-A single short series on the 5M model is dominated by per-call overhead. The GPU only pays off once there's enough work.
+Symmetric averaging (on by default) forecasts the series and its negation. Both passes run as one batch, so small forecasts pay the fixed per-call overhead once.
 
 ## License
 
