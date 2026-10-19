@@ -83,9 +83,9 @@ The released `model.safetensors` files load unchanged; the only key rename (`_ga
 
 ## Differences from the reference
 
-**Results are the same.** Forecasts differ from PyTorch by about 1e-6 relative. Long multi-block horizons drift up to about 1e-4 on the 5M model, the same amount PyTorch drifts from itself (see [Parity](#parity)). Batches are decoded in chunks, which changes memory use, not the results.
+Results are the same. Forecasts differ from PyTorch by about 1e-6 relative. Long multi-block horizons drift up to about 1e-4 on the 5M model, the same amount PyTorch drifts from itself (see [Parity](#parity)). Decoding batches in chunks changes memory use, not the results.
 
-For `forecast()` users, the practical changes are the import name, NumPy output and no `device` argument.
+If you only call `forecast()`, you will notice three changes: the import name, NumPy output and the missing `device` argument.
 
 ### API
 
@@ -100,7 +100,7 @@ For `forecast()` users, the practical changes are the import name, NumPy output 
 | `load_model` | `(path, device, dtype)` | `(path, *, dtype)` |
 | `predict_block` (low-level) | `group_ids`: any grouping of rows | `num_series`: series must be contiguous and equal-sized |
 
-Options must be passed by name because there's no `device` argument, so every later argument moved up one position. If positions were allowed, a call copied from the reference would run with `"cpu"` silently landing in `max_context`. Requiring names turns that into an immediate `TypeError`:
+Options must be passed by name. Without a `device` argument, every later argument moved up one position, so a call copied from the reference would silently put `"cpu"` into `max_context`. Requiring names turns that into an immediate `TypeError`:
 
 ```python
 # PyTorch reference: the 2nd argument is device, the 3rd is max_context
@@ -111,7 +111,7 @@ TimestralForecaster.from_pretrained("mistralai/Timestral-5M", max_context=4096)
 TimestralForecaster.from_pretrained("mistralai/Timestral-5M", 4096)  # TypeError
 ```
 
-The forecaster always packs rows as contiguous, equal-sized series, so the `predict_block` change only matters if you call that primitive directly. Row roles are host-side NumPy arrays, so choosing a code path never waits on the GPU.
+The forecaster always packs rows as contiguous, equal-sized series, so the `predict_block` change only matters if you call that primitive directly. Row roles are host-side NumPy arrays, so picking a code path never waits on the GPU.
 
 ### Weights
 
@@ -119,18 +119,18 @@ The released `model.safetensors` files load unchanged. The attention gate is cal
 
 ### Platform and speed
 
-The reference runs on CUDA GPUs or any CPU. On a Mac it's CPU-only, because MPS has no float64 and the normalization statistics need it. timestral-mlx targets Apple silicon. It's about 3× faster than the reference on an M3 Pro, and Timestral-209M peaks at about 5 GB of memory (see [Benchmark](#benchmark) and [Memory](#memory)).
+The reference runs on CUDA GPUs or any CPU. On a Mac it's CPU-only, because MPS has no float64 and the normalization statistics need it. timestral-mlx targets Apple silicon, where it is about 3× faster than the reference on an M3 Pro. Timestral-209M peaks at about 5 GB of memory (see [Benchmark](#benchmark) and [Memory](#memory)).
 
 ### Not carried over
 
-- **`stabilize_with_global`:** the reference config already rejects it, so nothing is lost.
-- **Low precision (bf16 / fp16):** passing `dtype` to `load_model` works, but only float32 is tested, as in the reference.
+- `stabilize_with_global`: the reference config already rejects it, so nothing is lost.
+- Low precision (bf16 / fp16): passing `dtype` to `load_model` works, but only float32 is tested, as in the reference.
 
 ### Internals (same math)
 
-- **Variate attention runs per series.** The reference builds one `(R, R)` attention over every row in the batch and masks out the other series. Here each series attends over its own `V` rows, so memory no longer grows with the square of the batch size. With one variate per series, the softmax weight is exactly 1, so variate attention returns `v` without running attention.
-- **RoPE is hand-written.** Timestral pairs head dimension `i` with `i + head_dim / 2` and zero-pads the frequencies past `rotary_dim / 2`. `mx.fast.rope(dims=rotary_dim)` pairs `i` with `i + rotary_dim / 2`, which gives different results.
-- **float64 runs on the CPU stream.** The Welford normalization statistics stay in float64 as in training. Metal has no float64, so they run on MLX's CPU stream; unified memory means the data isn't copied between CPU and GPU.
+- Variate attention runs per series. The reference builds one `(R, R)` attention over every row in the batch and masks out the other series. Here each series attends over its own `V` rows, so memory no longer grows with the square of the batch size. With one variate per series the softmax weight is exactly 1, so variate attention returns `v` without running attention.
+- RoPE is hand-written. Timestral pairs head dimension `i` with `i + head_dim / 2` and zero-pads the frequencies past `rotary_dim / 2`. `mx.fast.rope(dims=rotary_dim)` pairs `i` with `i + rotary_dim / 2`, which gives different results.
+- float64 runs on the CPU stream. The Welford normalization statistics stay in float64 as in training. Metal has no float64, so they run on MLX's CPU stream, and unified memory means the data isn't copied between CPU and GPU.
 
 ## Parity
 
@@ -146,14 +146,14 @@ The reference runs on CUDA GPUs or any CPU. On a Mac it's CPU-only, because MPS 
 - every clampsym combination
 - the released Timestral-5M checkpoint
 
-How far the MLX forecasts are from the PyTorch forecasts on the released checkpoints. Each number is the largest disagreement divided by the largest forecast value. `1e-6` means the two differ by at most one part in a million.
+The table shows how far the MLX forecasts are from the PyTorch forecasts on the released checkpoints. Each number is the largest disagreement divided by the largest forecast value, so `1e-6` means the two differ by at most one part in a million.
 
 | checkpoint | 2000 steps → 96 (1 block) | 1500 → 500 (1 block) | 2000 → 2500 (3 blocks) | 3 variates + known covariate, 800 → 64 |
 |---|---|---|---|---|
 | Timestral-5M | 5.4e-6 | 1.1e-6 | 9.7e-5 | 3.4e-6 |
 | Timestral-209M | 9.4e-7 | 1.1e-6 | 4.6e-6 | 6.4e-7 |
 
-The model forecasts up to 1,024 steps (32 patches of 32) per block. Longer horizons are decoded block by block, and each block's median feeds back as context. Tiny float32 differences can compound across blocks, which is why the 3-block column is larger. This is the model's own sensitivity, not a porting error. Nudging the input by one float32 rounding step moves PyTorch's own forecast by the same amount (7.4e-5 for Timestral-5M), and the per-block pattern matches MLX's.
+The model forecasts up to 1,024 steps (32 patches of 32) per block. Longer horizons are decoded block by block, and each block's median feeds back as context. Tiny float32 differences can compound across blocks, which is why the 3-block column is larger. That is the model's own sensitivity, not a porting error: nudging the input by one float32 rounding step moves PyTorch's own forecast by the same amount (7.4e-5 for Timestral-5M), and the per-block pattern matches MLX's.
 
 For scale, a real porting bug (the wrong RoPE pairing) gives about 0.5.
 
@@ -181,7 +181,7 @@ On an M3 Pro (36 GB), MLX on the GPU vs the PyTorch reference on the CPU, median
 | 209M | 8 × 4 × 4096 → 128 | 1.29 s | 3.59 s | 2.8× | 2.80 GB |
 | 209M | 1 × 1 × 32768 → 512 | 0.36 s | 1.25 s | 3.5× | 2.63 GB |
 
-Symmetric averaging (on by default) forecasts the series and its negation. Both passes run as one batch, so small forecasts pay the fixed per-call overhead once.
+Symmetric averaging (on by default) forecasts the series and its negation. Both passes run as one batch, so small forecasts pay the fixed per-call overhead only once.
 
 ## License
 
