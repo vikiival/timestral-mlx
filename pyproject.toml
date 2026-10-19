@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "timestral-mlx"
+version = "0.1.0"
+description = "Timestral time-series forecasting inference on Apple silicon with MLX"
+readme = "README.md"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+requires-python = ">=3.10"
+dependencies = [
+    "huggingface_hub>=0.23",
+    "mlx>=0.25",
+    "numpy>=1.24",
+]
+
+[dependency-groups]
+# The PyTorch implementation in ../timestral is the numerical reference for parity tests and benchmarks.
+dev = ["pytest>=8", "timestral", "safetensors>=0.4"]
+
+[tool.uv.sources]
+timestral = { path = "../timestral", editable = true }
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.ruff]
+line-length = 120
