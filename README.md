@@ -95,10 +95,21 @@ For `forecast()` users, the practical changes are the import name, NumPy output 
 | Output | torch tensors | NumPy float32 arrays |
 | Device | `device="cpu"` / `"cuda"`, `.device` property | none: GPU for the network, CPU stream for the float64 statistics |
 | Input | NumPy arrays or torch tensors | NumPy arrays, `mx.array`, or anything `np.asarray` accepts |
-| Options in `from_pretrained` and the constructor | positional or keyword | keyword-only after the path / model |
+| Options in `from_pretrained` and the constructor | by position or by name | by name only, after the path / model |
 | Memory controls | none | `max_batch_rows`, `max_batch_tokens` |
 | `load_model` | `(path, device, dtype)` | `(path, *, dtype)` |
 | `predict_block` (low-level) | `group_ids`: any grouping of rows | `num_series`: series must be contiguous and equal-sized |
+
+Options must be passed by name because there's no `device` argument, so every later argument moved up one position. If positions were allowed, a call copied from the reference would run with `"cpu"` silently landing in `max_context`. Requiring names turns that into an immediate `TypeError`:
+
+```python
+# PyTorch reference: the 2nd argument is device, the 3rd is max_context
+TimestralForecaster.from_pretrained("mistralai/Timestral-5M", "cpu", 4096)
+
+# timestral-mlx: name the options
+TimestralForecaster.from_pretrained("mistralai/Timestral-5M", max_context=4096)
+TimestralForecaster.from_pretrained("mistralai/Timestral-5M", 4096)  # TypeError
+```
 
 The forecaster always packs rows as contiguous, equal-sized series, so the `predict_block` change only matters if you call that primitive directly. Row roles are host-side NumPy arrays, so choosing a code path never waits on the GPU.
 
