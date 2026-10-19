@@ -83,10 +83,43 @@ The released `model.safetensors` files load unchanged; the only key rename (`_ga
 
 ## Differences from the reference
 
-- **Variate attention is per series.** The reference builds one `(R, R)` attention over every row in the batch and masks out the other series. Here each series attends over its own `V` rows. That's the same result, but memory no longer grows with the square of the batch size. With one variate per series, the softmax weight is exactly 1, so variate attention returns `v` without running attention.
-- **`predict_block` takes `num_series`, not `group_ids`.** Rows are always packed series by series with equal group sizes. Row roles are host-side NumPy arrays, so choosing a code path never waits on the GPU.
+**Results are the same.** Forecasts differ from PyTorch by about 1e-6 relative. Long multi-block horizons drift up to about 1e-4 on the 5M model, the same amount PyTorch drifts from itself (see [Parity](#parity)). Batches are decoded in chunks, which changes memory use, not the results.
+
+For `forecast()` users, the practical changes are the import name, NumPy output and no `device` argument.
+
+### API
+
+| | PyTorch reference | timestral-mlx |
+|---|---|---|
+| Import | `from timestral import ...` | `from timestral_mlx import ...` |
+| Output | torch tensors | NumPy float32 arrays |
+| Device | `device="cpu"` / `"cuda"`, `.device` property | none: GPU for the network, CPU stream for the float64 statistics |
+| Input | NumPy arrays or torch tensors | NumPy arrays, `mx.array`, or anything `np.asarray` accepts |
+| Options in `from_pretrained` and the constructor | positional or keyword | keyword-only after the path / model |
+| Memory controls | none | `max_batch_rows`, `max_batch_tokens` |
+| `load_model` | `(path, device, dtype)` | `(path, *, dtype)` |
+| `predict_block` (low-level) | `group_ids`: any grouping of rows | `num_series`: series must be contiguous and equal-sized |
+
+The forecaster always packs rows as contiguous, equal-sized series, so the `predict_block` change only matters if you call that primitive directly. Row roles are host-side NumPy arrays, so choosing a code path never waits on the GPU.
+
+### Weights
+
+The released `model.safetensors` files load unchanged. The attention gate is called `_gate` in the file and `gate` here, because MLX doesn't treat names that start with an underscore as parameters. It's renamed at load time. Weights saved from the MLX model need the reverse rename before PyTorch can load them.
+
+### Platform and speed
+
+The reference runs on CUDA GPUs or any CPU. On a Mac it's CPU-only, because MPS has no float64 and the normalization statistics need it. timestral-mlx targets Apple silicon. It's about 3× faster than the reference on an M3 Pro, and Timestral-209M peaks at about 5 GB of memory (see [Benchmark](#benchmark) and [Memory](#memory)).
+
+### Not carried over
+
+- **`stabilize_with_global`:** the reference config already rejects it, so nothing is lost.
+- **Low precision (bf16 / fp16):** passing `dtype` to `load_model` works, but only float32 is tested, as in the reference.
+
+### Internals (same math)
+
+- **Variate attention runs per series.** The reference builds one `(R, R)` attention over every row in the batch and masks out the other series. Here each series attends over its own `V` rows, so memory no longer grows with the square of the batch size. With one variate per series, the softmax weight is exactly 1, so variate attention returns `v` without running attention.
 - **RoPE is hand-written.** Timestral pairs head dimension `i` with `i + head_dim / 2` and zero-pads the frequencies past `rotary_dim / 2`. `mx.fast.rope(dims=rotary_dim)` pairs `i` with `i + rotary_dim / 2`, which gives different results.
-- **`stabilize_with_global` is not implemented.** The config already rejects it.
+- **float64 runs on the CPU stream.** The Welford normalization statistics stay in float64 as in training. Metal has no float64, so they run on MLX's CPU stream; unified memory means the data isn't copied between CPU and GPU.
 
 ## Parity
 
