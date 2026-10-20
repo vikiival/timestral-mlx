@@ -185,4 +185,4 @@ Symmetric averaging (on by default) forecasts the series and its negation. Both 
 
 ## License
 
-The code is Apache 2.0, derived from [mistralai/timestral](https://github.com/mistralai/timestral) (Apache 2.0). The Timestral weights are released separately on the Hugging Face Hub under a [Modified MIT license](https://huggingface.co/mistralai/Timestral-209M/blob/main/LICENSE).
+The code is Apache 2.0, derived from [mistralai/timestral](https://github.com/mistralai/timestral) (Apache 2.0). The Timestral weights are released separately on the Hugging Face Hub under a [Modified MIT license](https://huggingface.co/mistralai/Timestral-209M/blob/main/LICENSE). It grants no rights to anyone whose company or employer has more than $20 million in monthly revenue.
