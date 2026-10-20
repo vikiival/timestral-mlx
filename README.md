@@ -163,6 +163,33 @@ uv run pytest                          # all tests; the 5M parity test downloads
 TIMESTRAL_SKIP_HUB=1 uv run pytest     # offline
 ```
 
+### Accuracy against float64
+
+Comparing MLX with PyTorch shows how far apart they are, but not which one is closer to the exact answer, because both compute in float32. `benchmarks/precision.py` runs the PyTorch reference in float64 as ground truth and measures both float32 implementations against it, using the same measure as the table above:
+
+```bash
+uv run python benchmarks/precision.py --models 5M 209M
+```
+
+| checkpoint | case | MLX | PyTorch (float32) |
+|---|---|---|---|
+| Timestral-5M | 32 series, 2048 → 96 | 1.3e-6 | 1.3e-6 |
+| | 16 series + known covariate, 2048 → 96 | 1.4e-6 | 7.7e-7 |
+| | 8 series × 3 variates + past + known covariate, 4096 → 128 | 1.3e-6 | 1.1e-6 |
+| | 1 series + known covariate, 32768 → 512 | 1.8e-6 | 2.1e-6 |
+| | 4 series, 2000 → 2500 (3 blocks) | 1.9e-5 | 4.8e-5 |
+| | 4 series + known covariate, 2000 → 2500 (3 blocks) | 7.4e-6 | 2.1e-5 |
+| Timestral-209M | 32 series, 2048 → 96 | 7.6e-7 | 8.9e-7 |
+| | 16 series + known covariate, 2048 → 96 | 5.5e-7 | 7.6e-7 |
+| | 8 series × 3 variates + past + known covariate, 4096 → 128 | 7.2e-7 | 9.7e-7 |
+| | 1 series + known covariate, 32768 → 512 | 6.7e-7 | 8.4e-7 |
+| | 4 series, 2000 → 2500 (3 blocks) | 4.4e-6 | 6.6e-6 |
+| | 4 series + known covariate, 2000 → 2500 (3 blocks) | 5.8e-6 | 3.3e-6 |
+
+Neither implementation is consistently closer. On a single block, both are within about one part in a million of the float64 answer, which is as close as float32 arithmetic gets. On multi-block horizons, both drift by similar amounts. The port loses no accuracy.
+
+The ground truth is stable to about 1e-16: running it with a different thread count, which reorders its sums, moves it by no more than that.
+
 ## Benchmark
 
 ```bash
