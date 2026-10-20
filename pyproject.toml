@@ -10,11 +10,25 @@ readme = "README.md"
 license = "Apache-2.0"
 license-files = ["LICENSE"]
 requires-python = ">=3.10"
+keywords = ["mlx", "apple-silicon", "time-series", "forecasting", "timestral"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Science/Research",
+    "Operating System :: MacOS",
+    "Programming Language :: Python :: 3",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
 dependencies = [
     "huggingface_hub>=0.23",
     "mlx>=0.25",
     "numpy>=1.24",
 ]
+
+[project.urls]
+Homepage = "https://github.com/vikiival/timestral-mlx"
+Repository = "https://github.com/vikiival/timestral-mlx"
+Issues = "https://github.com/vikiival/timestral-mlx/issues"
+Upstream = "https://github.com/mistralai/timestral"
 
 [dependency-groups]
 # The PyTorch implementation in ../timestral is the numerical reference for parity tests and benchmarks.

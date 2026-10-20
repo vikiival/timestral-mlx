@@ -11,7 +11,7 @@ The port matches the PyTorch reference to about 1e-6 relative difference on the 
 **To run forecasts only** (no PyTorch, no reference repo):
 
 ```bash
-git clone <this repo> timestral-mlx && cd timestral-mlx
+git clone https://github.com/vikiival/timestral-mlx.git && cd timestral-mlx
 uv sync --frozen --no-dev    # mlx, numpy, huggingface_hub, as pinned in uv.lock
 ```
 
@@ -21,14 +21,14 @@ Pass `--frozen`. Without it, uv re-resolves the lockfile, which needs the refere
 
 ```bash
 git clone https://github.com/mistralai/timestral.git
-git clone <this repo> timestral-mlx
+git clone https://github.com/vikiival/timestral-mlx.git
 cd timestral-mlx && uv sync
 ```
 
 The layout must be:
 
 ```
-Playground/
+parent-dir/
 ├── timestral/        # PyTorch reference, unmodified
 └── timestral-mlx/
 ```
