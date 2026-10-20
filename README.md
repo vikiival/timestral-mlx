@@ -8,7 +8,15 @@ The port matches the PyTorch reference to about 1e-6 relative difference on the 
 
 ## Install
 
-**To run forecasts only** (no PyTorch, no reference repo):
+**To run forecasts only** (no PyTorch, no reference repo), install from [PyPI](https://pypi.org/project/timestral-mlx/):
+
+```bash
+pip install timestral-mlx    # or: uv add timestral-mlx
+```
+
+It needs a Mac with Apple silicon. On other platforms `mlx` installs without Metal and runs on the CPU.
+
+**From source:**
 
 ```bash
 git clone https://github.com/vikiival/timestral-mlx.git && cd timestral-mlx
