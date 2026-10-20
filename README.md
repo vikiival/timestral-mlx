@@ -60,9 +60,9 @@ forecast.quantile(0.9)     # (2, 1, 96)
 Series are decoded in chunks to bound memory, using two limits:
 
 - `max_batch_rows` (default 64): packed rows per model call. A packed row is one variate or covariate of one series.
-- `max_batch_tokens` (default 65,536): packed rows × transformer tokens per model call. This drives peak memory. A row's tokens are its context patches plus one decode block, doubled when covariates are present.
+- `max_batch_tokens` (default 65,536): packed rows × transformer tokens per model call. This drives peak memory. A row's tokens are its context patches plus one decode block, or two blocks when covariates are present.
 
-With the defaults, Timestral-209M peaks at about 5 GB even at the maximum context (32,768 steps): 4.9 GB with 64 series, and 5.2 GB with 16 series plus a known covariate. Raise the limits for more throughput, or lower them on a smaller machine:
+With the defaults, Timestral-209M peaks at about 5 GB even at the maximum context (32,768 steps): 4.7 GB with 64 series, and 5.1 GB with 16 series plus a known covariate. Raise the limits for more throughput, or lower them on a smaller machine:
 
 ```python
 forecaster = TimestralForecaster.from_pretrained("mistralai/Timestral-209M", max_batch_tokens=32768)
@@ -119,7 +119,7 @@ The released `model.safetensors` files load unchanged. The attention gate is cal
 
 ### Platform and speed
 
-The reference runs on CUDA GPUs or any CPU. On a Mac it's CPU-only, because MPS has no float64 and the normalization statistics need it. timestral-mlx targets Apple silicon, where it is about 3× faster than the reference on an M3 Pro. Timestral-209M peaks at about 5 GB of memory (see [Benchmark](#benchmark) and [Memory](#memory)).
+The reference runs on CUDA GPUs or any CPU. On a Mac it's CPU-only, because MPS has no float64 and the normalization statistics need it. timestral-mlx targets Apple silicon, where it is about 3× faster than the reference on an M3 Pro, and 5–6× faster with covariates. Timestral-209M peaks at about 5 GB of memory (see [Benchmark](#benchmark) and [Memory](#memory)).
 
 ### Not carried over
 
@@ -130,6 +130,7 @@ The reference runs on CUDA GPUs or any CPU. On a Mac it's CPU-only, because MPS 
 
 - Variate attention runs per series. The reference builds one `(R, R)` attention over every row in the batch and masks out the other series. Here each series attends over its own `V` rows, so memory no longer grows with the square of the batch size. With one variate per series the softmax weight is exactly 1, so variate attention returns `v` without running attention.
 - RoPE is hand-written. Timestral pairs head dimension `i` with `i + head_dim / 2` and zero-pads the frequencies past `rotary_dim / 2`. `mx.fast.rope(dims=rotary_dim)` pairs `i` with `i + rotary_dim / 2`, which gives different results.
+- The covariate path builds decoder tokens for the forecast block only. With covariates, the encoder spans the context and the horizon, so known-future values can be read. The reference also builds a decoder token for every context patch, but those tokens only attend to themselves and nothing attends to them. Leaving them out roughly halves the time of a covariate forecast without changing its result.
 - float64 runs on the CPU stream. The Welford normalization statistics stay in float64 as in training. Metal has no float64, so they run on MLX's CPU stream, and unified memory means the data isn't copied between CPU and GPU.
 
 ## Parity
@@ -172,14 +173,20 @@ On an M3 Pro (36 GB), MLX on the GPU vs the PyTorch reference on the CPU, median
 
 | model | series × variates × context → horizon | MLX | PyTorch CPU | speedup | MLX peak |
 |---|---|---|---|---|---|
-| 5M | 1 × 1 × 2048 → 96 | 4 ms | 10 ms | 2.3× | 0.05 GB |
-| 5M | 32 × 1 × 2048 → 96 | 29 ms | 89 ms | 3.1× | 0.80 GB |
-| 5M | 1 × 1 × 32768 → 512 | 20 ms | 67 ms | 3.3× | 0.41 GB |
-| 209M | 1 × 1 × 2048 → 96 | 29 ms | 138 ms | 4.7× | 1.05 GB |
-| 209M | 32 × 1 × 2048 → 96 | 0.61 s | 1.70 s | 2.8× | 2.74 GB |
-| 209M | 256 × 1 × 512 → 64 | 1.34 s | 3.65 s | 2.7× | 2.36 GB |
-| 209M | 8 × 4 × 4096 → 128 | 1.29 s | 3.59 s | 2.8× | 2.80 GB |
-| 209M | 1 × 1 × 32768 → 512 | 0.36 s | 1.25 s | 3.5× | 2.63 GB |
+| 5M | 1 × 1 × 2048 → 96 | 6 ms | 12 ms | 2.2× | 0.05 GB |
+| 5M | 32 × 1 × 2048 → 96 | 29 ms | 84 ms | 2.9× | 0.80 GB |
+| 5M | 1 × 1 × 32768 → 512 | 21 ms | 61 ms | 2.9× | 0.41 GB |
+| 5M | 16 × 1 (+1 known) × 2048 → 96 | 33 ms | 167 ms | 5.0× | 0.87 GB |
+| 5M | 1 × 1 (+1 known) × 32768 → 512 | 42 ms | 265 ms | 6.3× | 0.84 GB |
+| 209M | 1 × 1 × 2048 → 96 | 29 ms | 132 ms | 4.5× | 1.05 GB |
+| 209M | 32 × 1 × 2048 → 96 | 0.61 s | 1.62 s | 2.7× | 2.74 GB |
+| 209M | 256 × 1 × 512 → 64 | 1.33 s | 3.42 s | 2.6× | 2.36 GB |
+| 209M | 8 × 4 × 4096 → 128 | 1.26 s | 3.23 s | 2.6× | 2.80 GB |
+| 209M | 1 × 1 × 32768 → 512 | 0.35 s | 1.04 s | 3.0× | 2.63 GB |
+| 209M | 16 × 1 (+1 known) × 2048 → 96 | 0.67 s | 3.17 s | 4.8× | 2.89 GB |
+| 209M | 1 × 1 (+1 known) × 32768 → 512 | 0.73 s | 4.18 s | 5.7× | 2.85 GB |
+
+"+1 known" adds one known-future covariate per series. The larger speedup with covariates comes from the decoder trim described under [Internals](#internals-same-math).
 
 Symmetric averaging (on by default) forecasts the series and its negation. Both passes run as one batch, so small forecasts pay the fixed per-call overhead only once.
 
