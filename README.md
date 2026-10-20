@@ -119,7 +119,7 @@ The released `model.safetensors` files load unchanged. The attention gate is cal
 
 ### Platform and speed
 
-The reference runs on CUDA GPUs or any CPU. On a Mac it's CPU-only, because MPS has no float64 and the normalization statistics need it. timestral-mlx targets Apple silicon, where it is about 3× faster than the reference on an M3 Pro, and 5–6× faster with covariates. Timestral-209M peaks at about 5 GB of memory (see [Benchmark](#benchmark) and [Memory](#memory)).
+The reference runs on CUDA GPUs or any CPU. On a Mac it's CPU-only, because MPS has no float64 and the normalization statistics need it. timestral-mlx targets Apple silicon, where it is about 3× faster than the reference on an M3 Pro, and about 5–6× faster with covariates. Timestral-209M peaks at about 5 GB of memory (see [Benchmark](#benchmark) and [Memory](#memory)).
 
 ### Not carried over
 
@@ -186,9 +186,9 @@ uv run python benchmarks/precision.py --models 5M 209M
 | | 4 series, 2000 → 2500 (3 blocks) | 4.4e-6 | 6.6e-6 |
 | | 4 series + known covariate, 2000 → 2500 (3 blocks) | 5.8e-6 | 3.3e-6 |
 
-Neither implementation is consistently closer. On a single block, both are within about one part in a million of the float64 answer, which is as close as float32 arithmetic gets. On multi-block horizons, both drift by similar amounts. The port loses no accuracy.
+The port is as accurate as the reference. MLX is closer in 8 of the 12 cases, PyTorch in 3, and one is a tie, so neither is consistently closer. On a single block, both are within about one part in a million of the float64 answer. That is the error to expect from float32 arithmetic through a network this deep, about 16 times float32's rounding step. On multi-block horizons, both drift by similar amounts.
 
-The ground truth is stable to about 1e-16: running it with a different thread count, which reorders its sums, moves it by no more than that.
+The script checks that the ground truth really is float64. It records every operation of the float64 run and fails if any of them computes in float32 or narrows a float64 value to float32. Only exact steps on the float32 inputs are allowed, such as copies, casts to float64 and NaN handling. One exception is deliberate: the RoPE frequency table is built in float32, in MLX, in the reference and in training, so it counts as part of the model. Rebuilding it in float64 would move the ground truth by about 1e-8.
 
 ## Benchmark
 
