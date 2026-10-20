@@ -173,11 +173,12 @@ def test_chunked_batch_matches_single_call(tiny) -> None:
     assert_parity(chunked, full, rtol=1e-5)
 
 
-def test_predict_block_parity(tiny) -> None:
+@pytest.mark.parametrize("h", [1, 3, 4])  # up to the tiny model's block_size
+def test_predict_block_parity(tiny, h) -> None:
     """The network primitive alone, on both paths, before any forecaster logic."""
     ref, port = tiny
     rng = np.random.default_rng(1)
-    b, v, t, h = 3, 3, 64, 4
+    b, v, t = 3, 3, 64
     x = rng.standard_normal((b * v, t)).astype(np.float32).cumsum(-1)
     obs = rng.random((b * v, t)) > 0.1
     obs[0, :20] = False

@@ -163,7 +163,8 @@ def test_token_budget_bounds_chunks() -> None:
     assert budgeted._series_per_chunk(2, 256, 24, windowed=False) == 1
     assert fc._series_per_chunk(1, 256, 24, windowed=False) == 64
     assert TimestralForecaster(fc.model, max_batch_tokens=36 * 10)._series_per_chunk(1, 256, 24, windowed=False) == 10
-    assert TimestralForecaster(fc.model, max_batch_tokens=72 * 10)._series_per_chunk(2, 256, 24, windowed=True) == 5
+    # With covariates the encoder also spans the 4-patch block: 32 + 4 + 4 tokens per row.
+    assert TimestralForecaster(fc.model, max_batch_tokens=40 * 10)._series_per_chunk(2, 256, 24, windowed=True) == 5
     x = series(5, 2, 100)
     np.testing.assert_allclose(budgeted.forecast(x, 20).quantiles, fc.forecast(x, 20).quantiles, rtol=1e-5, atol=1e-5)
 
