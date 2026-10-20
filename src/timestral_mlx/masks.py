@@ -60,47 +60,33 @@ def build_forecast_positions(context_len: int, horizon: int, first_obs: mx.array
     return p[None, :] - first_obs[:, None]
 
 
-def compute_block_layout(min_context: mx.array, n_patches: int, block_size: int) -> tuple[mx.array, mx.array]:
-    """Per decoder position: the anchor of its block and whether it is active (`p >= s`)."""
-    p = mx.arange(n_patches)[None, :]
-    s = min_context[:, None]
-    active = p >= s
-    offset = mx.maximum(p - s, 0)
-    anchor = s + block_size * (offset // block_size)
-    anchor = mx.where(active, anchor, 0)
-    return anchor, active
-
-
-def build_two_stream_time_mask(
-    min_context: mx.array,
-    n_patches: int,
-    block_size: int,
-    key_valid: mx.array,
-    bidirectional_rows: mx.array | None,
+def build_window_time_mask(
+    context_len: int, horizon: int, key_valid: mx.array, bidirectional_rows: mx.array | None
 ) -> mx.array:
-    """`(R, 1, 2N, 2N)` time mask over a full `[Enc ; Dec]` window (the covariate path).
+    """`(R, 1, N+h, N+h)` time mask for one block with covariates, `N = L + h`.
+
+    The encoder spans the context and the horizon, so known-future values are keys; the
+    decoder holds the `h` horizon queries only.
 
     - Enc to Enc: causal over valid keys; full (non-causal) for `bidirectional_rows`,
       the known-future covariates.
     - Enc to Dec: never.
-    - Dec to Enc: a decoder token in the block anchored at `b` reads valid `Enc[j]`, `j < b`.
-    - Dec to Dec: causal within the same block; every decoder token reads itself.
+    - Dec to Enc: valid context keys `j < L`.
+    - Dec to Dec: causal.
+
+    The reference also builds decoder tokens for the `L` context patches. They only read
+    themselves and nothing reads them, so leaving them out does not change the forecast.
     """
-    anchor, active = compute_block_layout(min_context, n_patches, block_size)
-    rows, n = active.shape
-    causal = _tril(n)
-    key_col = key_valid[:, None, :]
-    j = mx.arange(n).reshape(1, 1, n)
+    rows, n = key_valid.shape
     eye = _eye(n)
     enc_enc = enc_causal_mask(key_valid)
     if bidirectional_rows is not None:
         enc_bi = mx.broadcast_to(key_valid[:, None, :], (rows, n, n)) | eye[None]
         enc_enc = mx.where(bidirectional_rows[:, None, None], enc_bi, enc_enc)
-    enc_dec = mx.zeros((rows, n, n), dtype=mx.bool_)
-    dec_enc = active[:, :, None] & (j < anchor[:, :, None]) & key_col
-    same_block = anchor[:, :, None] == anchor[:, None, :]
-    dec_dec = same_block & causal[None] & active[:, :, None] & active[:, None, :]
-    dec_dec = dec_dec | eye[None]
+    enc_dec = mx.zeros((rows, n, horizon), dtype=mx.bool_)
+    dec_enc = key_valid[:, None, :] & (mx.arange(n) < context_len)[None, None, :]
+    dec_enc = mx.broadcast_to(dec_enc, (rows, horizon, n))
+    dec_dec = mx.broadcast_to(_tril(horizon)[None], (rows, horizon, horizon))
     top = mx.concatenate([enc_enc, enc_dec], axis=2)
     bottom = mx.concatenate([dec_enc, dec_dec], axis=2)
     return mx.concatenate([top, bottom], axis=1)[:, None]
@@ -153,11 +139,10 @@ def build_two_stream_variate_mask(
     return mask.reshape(b * n_slots, 1, v, v)
 
 
-def build_two_stream_positions(n_patches: int, first_obs: mx.array) -> mx.array:
-    """`(R, 2N)` positions: encoder and decoder token of the same patch share a time."""
-    p = mx.arange(n_patches)
-    row = p[None, :] - first_obs[:, None]
-    return mx.concatenate([row, row], axis=-1)
+def build_window_positions(context_len: int, horizon: int, first_obs: mx.array) -> mx.array:
+    """`(R, N+h)` positions: a decoder token shares the time of its horizon patch's encoder token."""
+    row = mx.arange(context_len + horizon)[None, :] - first_obs[:, None]
+    return mx.concatenate([row, row[:, context_len:]], axis=-1)
 
 
 def group_first_observed_patch(obs_per_patch: mx.array, group_size: int) -> mx.array:

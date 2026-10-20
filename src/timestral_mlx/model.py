@@ -19,9 +19,9 @@ from timestral_mlx.layers import ResidualBlock, Transformer, TwoStreamMask
 from timestral_mlx.masks import (
     build_forecast_positions,
     build_forecast_time_mask,
-    build_two_stream_positions,
-    build_two_stream_time_mask,
     build_two_stream_variate_mask,
+    build_window_positions,
+    build_window_time_mask,
     compute_enc_key_validity,
     group_first_observed_patch,
 )
@@ -247,7 +247,9 @@ class TimestralModel(nn.Module):
 
         Target and past-only rows keep a blank horizon. The time and variate masks keep
         target information out of covariate rows and keep any row's future out of the
-        targets.
+        targets. The decoder holds only the `h` horizon queries. That relies on the block
+        fitting in one training block (`h <= block_size`), so every query shares the anchor
+        `L` (see :func:`timestral_mlx.masks.build_window_time_mask`).
         """
         c = self.config
         ps = c.patch_size
@@ -265,20 +267,18 @@ class TimestralModel(nn.Module):
         scaled, loc, scale = self.scale(full_inputs, full_observed)
         scaled, loc, scale = self._known_cov_scaling(full_inputs, full_observed, scaled, loc, scale, known_np)
         x_enc = self.representation(scaled, full_observed)
-        x_dec = self.representation.forecast_tokens(rows, n)
+        x_dec = self.representation.forecast_tokens(rows, h)
 
         obs_per_patch = full_observed.reshape(rows, n, ps).any(axis=-1)
         key_valid = compute_enc_key_validity(obs_per_patch, c.attend_missing_patches)
-        s_rows = mx.full((rows,), ll, dtype=mx.int32)
-        time_mask = build_two_stream_time_mask(s_rows, n, c.block_size, key_valid, bidirectional_rows=known_rows)
+        time_mask = build_window_time_mask(ll, h, key_valid, bidirectional_rows=known_rows)
         variate_mask = build_two_stream_variate_mask(
-            key_valid, n, group_size, target_rows=target_rows, bidirectional_rows=known_rows
+            key_valid, h, group_size, target_rows=target_rows, bidirectional_rows=known_rows
         )
         first_obs = group_first_observed_patch(obs_per_patch, group_size)
-        positions = build_two_stream_positions(n, first_obs)
+        positions = build_window_positions(ll, h, first_obs)
 
         preds = self._run_two_stream(x_enc, x_dec, time_mask, variate_mask, positions, group_size)
-        horizon_preds = preds[:, ll * ps : n * ps]
         anchor_loc = loc[:, (ll - 1) * ps : (ll - 1) * ps + 1]
         anchor_scale = scale[:, (ll - 1) * ps : (ll - 1) * ps + 1]
-        return denormalize_quantiles(horizon_preds, anchor_loc[..., None], anchor_scale[..., None], c.use_asinh)
+        return denormalize_quantiles(preds, anchor_loc[..., None], anchor_scale[..., None], c.use_asinh)

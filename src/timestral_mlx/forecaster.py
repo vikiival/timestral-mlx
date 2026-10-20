@@ -120,7 +120,7 @@ class TimestralForecaster:
         max_batch_rows: Packed rows (series x (variates + covariates)) per model call.
         max_batch_tokens: Packed rows x transformer tokens per model call, the main
             driver of peak memory (activations grow with it, not with the weights).
-            A row's tokens are its context patches plus one decode block, doubled with
+            A row's tokens are its context patches plus one decode block, or two with
             covariates. The default keeps Timestral-209M under about 5 GB at any context
             length; lower it on small machines, raise it for throughput. A series is
             never split, so a chunk holds at least one series whatever the limits.
@@ -403,14 +403,14 @@ class TimestralForecaster:
         """Series per model call under `max_batch_rows` and `max_batch_tokens` (at least one).
 
         Tokens per row are bounded by the largest context the decode loop reaches (it grows
-        by each fed-back block up to `max_context`) plus one decode block, doubled on the
-        covariate path, whose window holds an encoder and a decoder token per patch.
+        by each fed-back block up to `max_context`) plus one block of decoder tokens. The
+        covariate path adds a second block: its encoder also covers the horizon.
         """
         ps = self.patch_size
         ctx_patches = ctx_len // ps
         horizon_patches = math.ceil(prediction_length / ps)
         peak_ctx = min(ctx_patches + horizon_patches, max(ctx_patches, math.ceil(self.max_context / ps)))
-        tokens = (peak_ctx + self.per_shot_horizon_patches) * (2 if windowed else 1)
+        tokens = peak_ctx + self.per_shot_horizon_patches * (2 if windowed else 1)
         rows = min(self.max_batch_rows, self.max_batch_tokens // tokens)
         return max(1, rows // rows_per_series)
 
