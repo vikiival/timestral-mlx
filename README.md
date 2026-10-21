@@ -131,7 +131,7 @@ The reference runs on CUDA GPUs or any CPU. On a Mac it's CPU-only, because MPS 
 - Variate attention runs per series. The reference builds one `(R, R)` attention over every row in the batch and masks out the other series. Here each series attends over its own `V` rows, so memory no longer grows with the square of the batch size. With one variate per series the softmax weight is exactly 1, so variate attention returns `v` without running attention.
 - RoPE is hand-written. Timestral pairs head dimension `i` with `i + head_dim / 2` and zero-pads the frequencies past `rotary_dim / 2`. `mx.fast.rope(dims=rotary_dim)` pairs `i` with `i + rotary_dim / 2`, which gives different results.
 - The covariate path builds decoder tokens for the forecast block only. With covariates, the encoder spans the context and the horizon, so known-future values can be read. The reference also builds a decoder token for every context patch, but those tokens only attend to themselves and nothing attends to them. Leaving them out roughly halves the time of a covariate forecast without changing its result.
-- The transformer stack runs through `mx.compile`, which fuses the elementwise work between the matrix multiplies (RoPE, gates, residuals). Forecasts are bit-identical to the uncompiled stack and 5–15% faster. Each new input shape compiles once, in tens of milliseconds.
+- The transformer stack runs through `mx.compile`, which fuses the elementwise work between the matrix multiplies (RoPE, gates, residuals). On an M3 Pro, float32 forecasts from both released checkpoints we measured (5M and 209M) were bit-identical to the uncompiled stack and 5–15% faster. Each new combination of input shape and mask layout compiles once, in tens of milliseconds.
 - float64 runs on the CPU stream. The Welford normalization statistics stay in float64 as in training. Metal has no float64, so they run on MLX's CPU stream, and unified memory means the data isn't copied between CPU and GPU.
 
 ## Parity
@@ -194,7 +194,7 @@ The script checks that the ground truth really is float64. It records every oper
 ## Benchmark
 
 ```bash
-uv run python benchmarks/bench.py --models 5M 209M
+uv run python benchmarks/bench.py --models 5M 209M --repeats 5
 ```
 
 On an M3 Pro (36 GB), MLX on the GPU vs the PyTorch reference on the CPU, median of 5 runs:
