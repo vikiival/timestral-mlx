@@ -15,7 +15,7 @@ from timestral_mlx.layers import Transformer, TwoStreamMask
 KNOTS = (0.05, 0.1, 0.25, 0.4, 0.5, 0.6, 0.75, 0.9, 0.95)
 
 
-def tiny_forecaster(block_size: int = 4, max_context: int = 256) -> TimestralForecaster:
+def tiny_forecaster(block_size: int = 4, max_context: int = 256, **config) -> TimestralForecaster:
     config = TimestralConfig(
         patch_size=8,
         d_model=32,
@@ -25,6 +25,7 @@ def tiny_forecaster(block_size: int = 4, max_context: int = 256) -> TimestralFor
         quantile_knots=KNOTS,
         block_size=block_size,
         context_length=max_context,
+        **config,
     )
     mx.random.seed(0)
     model = TimestralModel(config)
@@ -187,9 +188,10 @@ def test_nan_error_counts_first_pass_only() -> None:
         fc.forecast(series(1, 1, 64), 8)
 
 
-def test_compiled_transformer_matches_uncompiled(monkeypatch) -> None:
-    """`mx.compile` changes no result, on every mask path, and picks up replaced weights."""
-    fc = tiny_forecaster()
+@pytest.mark.parametrize("split", [True, False])
+def test_compiled_transformer_matches_uncompiled(monkeypatch, split: bool) -> None:
+    """`mx.compile` changes no result, and a warm cache picks up replaced weights and a new dtype."""
+    fc = tiny_forecaster(split_context_horizon_attn=split)
 
     def run() -> list[np.ndarray]:
         x = series(2, 1, 120, seed=3)
@@ -205,14 +207,16 @@ def test_compiled_transformer_matches_uncompiled(monkeypatch) -> None:
         mask = time_mask.mask if enc_len is not None else time_mask
         return self._forward(x, mask, variate_mask, positions, enc_len, group_size)
 
-    compiled = run()
-    weight = fc.model.transformer.out_norm.scale
-    fc.model.transformer.out_norm.scale = 2 * weight
-    compiled_after = run()
-    with monkeypatch.context() as m:
-        m.setattr(Transformer, "__call__", plain)
-        plain_after = run()
-        fc.model.transformer.out_norm.scale = weight
-        plain_before = run()
-    for got, want in zip(compiled + compiled_after, plain_before + plain_after):
-        np.testing.assert_array_equal(got, want)
+    def check() -> None:
+        compiled = run()
+        with monkeypatch.context() as m:
+            m.setattr(Transformer, "__call__", plain)
+            uncompiled = run()
+        for got, want in zip(compiled, uncompiled):
+            np.testing.assert_array_equal(got, want)
+
+    check()
+    fc.model.transformer.out_norm.scale = 2 * fc.model.transformer.out_norm.scale
+    check()
+    fc.model.set_dtype(mx.float16)
+    check()
