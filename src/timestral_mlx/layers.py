@@ -10,6 +10,7 @@ on `(B * N, V, D)` groups instead of one `(R, R)` attention over the whole batch
 
 import math
 from dataclasses import dataclass
+from functools import partial
 
 import mlx.core as mx
 import mlx.nn as nn
@@ -247,6 +248,10 @@ class Transformer(nn.Module):
         ]
         self.rope = SinCosRoPE(dim=embed_dim // num_heads, base=rope_theta, rotary_dim=rope_dim)
         self.out_norm = RMSNorm(embed_dim, norm_eps)
+        # Compiled forwards, one per (two-stream split, mask presence, group size); MLX
+        # itself recompiles each one when the input shapes change. Set on the object, not
+        # the module dict, so the cache stays out of `state` and `parameters()`.
+        object.__setattr__(self, "_compiled", {})
 
     def __call__(
         self,
@@ -259,9 +264,30 @@ class Transformer(nn.Module):
         """Run the stack on `x` `(R, N, D)` with integer time `positions` `(R, N)`.
 
         `variate_mask` is `(B * N, 1, V, V)` for `V = group_size` rows per series, or None.
+        The stack runs through `mx.compile`, which fuses the elementwise work between the
+        matmuls; the result matches the uncompiled stack up to float32 rounding.
         """
         assert positions.shape == x.shape[:2], f"positions {tuple(positions.shape)} do not match x {tuple(x.shape)}"
         assert x.shape[0] % group_size == 0, f"{x.shape[0]} rows do not split into groups of {group_size}"
+        # `mx.compile` takes arrays, so the split point travels in the cache key.
+        enc_len = time_mask.enc_len if isinstance(time_mask, TwoStreamMask) else None
+        mask = time_mask.mask if enc_len is not None else time_mask
+        key = (enc_len, mask is None, variate_mask is None, group_size)
+        if key not in self._compiled:
+            forward = partial(self._forward, enc_len=enc_len, group_size=group_size)
+            self._compiled[key] = mx.compile(forward, inputs=self.state)
+        return self._compiled[key](x, mask, variate_mask, positions)
+
+    def _forward(
+        self,
+        x: mx.array,
+        mask: mx.array | None,
+        variate_mask: mx.array | None,
+        positions: mx.array,
+        enc_len: int | None,
+        group_size: int,
+    ) -> mx.array:
+        time_mask = mask if enc_len is None else TwoStreamMask(mask, enc_len)
         cos, sin = self.rope(positions, x.dtype)
         for layer in self.layers:
             x = layer(x, time_mask, variate_mask, cos, sin, group_size)
